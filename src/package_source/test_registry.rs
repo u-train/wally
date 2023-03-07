@@ -1,17 +1,20 @@
-use std::io::BufReader;
+use std::io::{BufReader, Write, BufWriter};
 use std::path::PathBuf;
 
 use anyhow::Context;
-use fs_err::File;
+use fs_err::{create_dir_all, File};
+use serde::Serialize;
 
 use crate::manifest::Manifest;
 use crate::package_id::PackageId;
 use crate::package_index::PackageIndexConfig;
 use crate::package_req::PackageReq;
 use crate::package_source::{PackageContents, PackageSource};
+use crate::test_package::PackageBuilder;
 
 use super::PackageSourceId;
 
+#[derive(Clone)]
 pub struct TestRegistry {
     path: PathBuf,
 }
@@ -19,6 +22,67 @@ pub struct TestRegistry {
 impl TestRegistry {
     pub fn new<P: Into<PathBuf>>(path: P) -> Self {
         Self { path: path.into() }
+    }
+
+    pub fn publish(&self, package_builder: PackageBuilder) -> anyhow::Result<()> {
+        let manifest = package_builder.manifest();
+        let package_name = &manifest.package.name;
+        let package_version = &manifest.package.version;
+
+        // First start by updating the index.
+        let mut package_index_path = self.path.clone();
+        package_index_path.push("index");
+        package_index_path.push(package_name.scope());
+        
+        // The index for this author may of not existed before.
+        create_dir_all(&package_index_path)?;
+
+        // The name contains all of their packages in json newline format.
+        package_index_path.push(package_name.name());
+
+        // Slurp the file if it exists for all prior packages, otherwise use a empty, default list.
+        let mut manifests = if package_index_path.try_exists()? {
+            let file = File::open(&package_index_path).with_context(|| {
+                format!("could not open package {} from index", package_name.name())
+            })?;
+
+            let file = BufReader::new(file);
+
+            serde_json::Deserializer::from_reader(file)
+                .into_iter::<Manifest>()
+                .collect::<Result<Vec<Manifest>, serde_json::Error>>()?
+        } else {
+            Vec::new()
+        };
+
+        manifests.push(manifest.clone());
+
+        // Reserialize the index file back.
+        let mut file = BufWriter::new(File::create(&package_index_path)?);
+        
+        // It must be done this way because each manifest is serialized into json, which is placed on its own line.
+        for manifest in manifests.into_iter() {
+            let mut temporary_handler = serde_json::Serializer::new(Vec::new());
+            manifest.serialize(&mut temporary_handler)?;        
+            file.write(&temporary_handler.into_inner())?;
+            file.write(b"\n")?;
+        }
+   
+        // Now writing the content out.
+        let mut package_content_path = self.path.clone();
+        package_content_path.push("contents");
+        package_content_path.push(package_name.scope());
+        package_content_path.push(package_name.name());
+
+        // Again, may be first-time author.
+        create_dir_all(&package_content_path)?;
+
+        package_content_path.push(format!("{}.zip", package_version));
+
+        // Despite having the .zip extension, it isn't an archive and is just raw bytes.
+        File::create(package_content_path)?.write_all(package_builder.contents().data())?;
+
+        Ok(())
     }
 }
 

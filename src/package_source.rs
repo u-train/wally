@@ -1,8 +1,6 @@
-mod in_memory;
 mod registry;
 mod test_registry;
 
-pub use self::in_memory::InMemoryRegistry;
 pub use self::registry::Registry;
 pub use self::test_registry::TestRegistry;
 

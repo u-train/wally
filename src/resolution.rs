@@ -313,14 +313,21 @@ pub struct DependencyRequest {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::{tempdir, TempDir};
+
     use super::*;
 
     use crate::{
-        package_name::PackageName, package_source::InMemoryRegistry, test_package::PackageBuilder,
+        package_name::PackageName, package_source::TestRegistry, test_package::PackageBuilder,
     };
 
-    fn test_project(registry: InMemoryRegistry, package: PackageBuilder) -> anyhow::Result<()> {
-        let package_sources = PackageSourceMap::new(Box::new(registry.source()));
+    fn temporary_registry() -> anyhow::Result<(TestRegistry, TempDir)> {
+        let directory = tempdir()?;
+        Ok((TestRegistry::new(directory.path()), directory))
+    }
+
+    fn test_project(registry: TestRegistry, package: PackageBuilder) -> anyhow::Result<()> {
+        let package_sources = PackageSourceMap::new(Box::new(registry));
         let manifest = package.into_manifest();
         let resolve = resolve(&manifest, &Default::default(), &package_sources)?;
         insta::assert_yaml_snapshot!(resolve);
@@ -329,17 +336,19 @@ mod tests {
 
     #[test]
     fn minimal() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
+        let (registry, _) = temporary_registry()?;
 
         let root = PackageBuilder::new("biff/minimal@0.1.0");
+
         test_project(registry, root)
     }
 
     #[test]
     fn one_dependency() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/minimal@0.1.0"));
-        registry.publish(PackageBuilder::new("biff/minimal@0.2.0"));
+        let (registry, _) = temporary_registry()?;
+        
+        registry.publish(PackageBuilder::new("biff/minimal@0.1.0"))?;
+        registry.publish(PackageBuilder::new("biff/minimal@0.2.0"))?;
 
         let root = PackageBuilder::new("biff/one-dependency@0.1.0")
             .with_dep("Minimal", "biff/minimal@0.1.0");
@@ -348,12 +357,12 @@ mod tests {
 
     #[test]
     fn transitive_dependency() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/minimal@0.1.0"));
+        let (registry, _) = temporary_registry()?;
+        registry.publish(PackageBuilder::new("biff/minimal@0.1.0"))?;
         registry.publish(
             PackageBuilder::new("biff/one-dependency@0.1.0")
                 .with_dep("Minimal", "biff/minimal@0.1.0"),
-        );
+        )?;
 
         let root = PackageBuilder::new("biff/transitive-dependency@0.1.0")
             .with_dep("OneDependency", "biff/one-dependency@0.1.0");
@@ -364,10 +373,10 @@ mod tests {
     /// dependency. Here, A depends on B and C, which both in turn depend on D.
     #[test]
     fn unified_dependencies() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/b@1.0.0").with_dep("D", "biff/d@1.0.0"));
-        registry.publish(PackageBuilder::new("biff/c@1.0.0").with_dep("D", "biff/d@1.0.0"));
-        registry.publish(PackageBuilder::new("biff/d@1.0.0"));
+        let (registry, _) = temporary_registry()?;
+        registry.publish(PackageBuilder::new("biff/b@1.0.0").with_dep("D", "biff/d@1.0.0"))?;
+        registry.publish(PackageBuilder::new("biff/c@1.0.0").with_dep("D", "biff/d@1.0.0"))?;
+        registry.publish(PackageBuilder::new("biff/d@1.0.0"))?;
 
         let root = PackageBuilder::new("biff/a@1.0.0")
             .with_dep("B", "biff/b@1.0.0")
@@ -381,8 +390,8 @@ mod tests {
     /// be marked as server-only.
     #[test]
     fn server_to_shared() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/shared@1.0.0"));
+        let (registry, _) = temporary_registry()?;
+        registry.publish(PackageBuilder::new("biff/shared@1.0.0"))?;
 
         let root =
             PackageBuilder::new("biff/root@1.0.0").with_server_dep("Shared", "biff/shared@1.0.0");
@@ -394,8 +403,8 @@ mod tests {
     /// dependencies should always be marked as server-only.
     #[test]
     fn shared_to_server() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/server@1.0.0").with_realm(Realm::Server));
+        let (registry, _) = temporary_registry()?;
+        registry.publish(PackageBuilder::new("biff/server@1.0.0").with_realm(Realm::Server))?;
 
         let root =
             PackageBuilder::new("biff/root@1.0.0").with_server_dep("Server", "biff/server@1.0.0");
@@ -404,15 +413,16 @@ mod tests {
     }
 
     #[test]
-    fn fail_server_in_shared() {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/server@1.0.0").with_realm(Realm::Server));
+    fn fail_server_in_shared() -> anyhow::Result<()> {
+        let (registry, _) = temporary_registry()?;
+        registry.publish(PackageBuilder::new("biff/server@1.0.0").with_realm(Realm::Server))?;
 
         let root = PackageBuilder::new("biff/root@1.0.0").with_dep("Server", "biff/server@1.0.0");
 
-        let package_sources = PackageSourceMap::new(Box::new(registry.source()));
+        let package_sources = PackageSourceMap::new(Box::new(registry));
         let err = resolve(root.manifest(), &Default::default(), &package_sources).unwrap_err();
         insta::assert_display_snapshot!(err);
+        Ok(())
     }
 
     /// Tests the simple one dependency case, except that a new version of the
@@ -421,18 +431,18 @@ mod tests {
     /// the dependency should not be upgraded.
     #[test]
     fn one_dependency_no_upgrade() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/minimal@1.0.0"));
+        let (registry, _) = temporary_registry()?;
+        registry.publish(PackageBuilder::new("biff/minimal@1.0.0"))?;
 
         let root = PackageBuilder::new("biff/one-dependency@1.0.0")
             .with_dep("Minimal", "biff/minimal@1.0.0");
 
-        let package_sources = PackageSourceMap::new(Box::new(registry.source()));
+        let package_sources = PackageSourceMap::new(Box::new(registry.clone()));
 
         let resolved = resolve(root.manifest(), &Default::default(), &package_sources)?;
         insta::assert_yaml_snapshot!("one_dependency_no_upgrade", resolved);
 
-        registry.publish(PackageBuilder::new("biff/minimal@1.1.0"));
+        registry.publish(PackageBuilder::new("biff/minimal@1.1.0"))?;
         let new_resolved = resolve(root.manifest(), &resolved.activated, &package_sources)?;
         insta::assert_yaml_snapshot!("one_dependency_no_upgrade", new_resolved);
 
@@ -441,13 +451,13 @@ mod tests {
 
     #[test]
     fn one_dependency_yes_upgrade() -> anyhow::Result<()> {
-        let registry = InMemoryRegistry::new();
-        registry.publish(PackageBuilder::new("biff/minimal@1.0.0"));
+        let (registry, _) = temporary_registry()?;
+        registry.publish(PackageBuilder::new("biff/minimal@1.0.0"))?;
 
         let root = PackageBuilder::new("biff/one-dependency@1.0.0")
             .with_dep("Minimal", "biff/minimal@1.0.0");
 
-        let package_sources = PackageSourceMap::new(Box::new(registry.source()));
+        let package_sources = PackageSourceMap::new(Box::new(registry.clone()));
 
         let resolved = resolve(root.manifest(), &Default::default(), &package_sources)?;
         insta::assert_yaml_snapshot!(resolved);
@@ -461,7 +471,7 @@ mod tests {
             .filter(|id| id.name() != &remove_this)
             .collect();
 
-        registry.publish(PackageBuilder::new("biff/minimal@1.1.0"));
+        registry.publish(PackageBuilder::new("biff/minimal@1.1.0"))?;
         let new_resolved = resolve(root.manifest(), &try_to_use, &package_sources)?;
         insta::assert_yaml_snapshot!(new_resolved);
 
