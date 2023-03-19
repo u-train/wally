@@ -60,7 +60,6 @@ impl TestRegistry {
         // Again, may be first-time author.
         create_dir_all(&package_content_path.parent().unwrap())?;
 
-        // Despite having the .zip extension, it isn't an archive and is just raw bytes.
         File::create(package_content_path)?.write_all(package_builder.contents().data())?;
 
         Ok(())
